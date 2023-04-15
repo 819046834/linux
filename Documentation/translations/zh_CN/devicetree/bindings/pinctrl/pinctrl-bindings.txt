@@ -1,13 +1,19 @@
 == Introduction ==
+== 概述 ==
 
 Hardware modules that control pin multiplexing or configuration parameters
 such as pull-up/down, tri-state, drive-strength etc are designated as pin
 controllers. Each pin controller must be represented as a node in device tree,
 just like any other hardware module.
+控制引脚复用或配置参数的硬件模块,如上拉/下拉、三态、驱动强度等，被称为引脚控制器。
+每个引脚控制器，像任何其他硬件模块一样，必须在设备树中被表示为一个节点。
 
 Hardware modules whose signals are affected by pin configuration are
 designated client devices. Again, each client device must be represented as a
 node in device tree, just like any other hardware module.
+
+那些信号受引脚配置影响的硬件模块被称为客户设备。
+同样，每个客户设备必须在设备树中被表示为一个节点，就像任何其他硬件模块一样。
 
 For a client device to operate correctly, certain pin controllers must
 set up certain specific pin configurations. Some client devices need a
@@ -17,9 +23,19 @@ device is inactive. Hence, each client device can define a set of named
 states. The number and names of those states is defined by the client device's
 own binding.
 
+
+为了使客户设备正常工作，某些引脚控制器必须设置某些特定的引脚配置。
+有些客户设备需要一个单一的静态引脚配置，例如，在初始化过程中设置的。
+其他的需要在运行时重新配置引脚，例如在设备不工作时对引脚进行三态处理。
+因此，每个客户设备可以定义一组状态。
+这些状态的数量和名称是由客户设备的绑定定义的。
+
 The common pinctrl bindings defined in this file provide an infrastructure
 for client device device tree nodes to map those state names to the pin
 configuration used by those states.
+
+本文件中定义的通用pinctrl绑定，为客户端设备的设备树节点提供了一个基础结构，
+以将这些状态名称映射到这些状态所使用的引脚的配置。
 
 Note that pin controllers themselves may also be client devices of themselves.
 For example, a pin controller may set up its own "active" state when the
@@ -30,7 +46,14 @@ individual board device tree files, and any requirements imposed by the
 bindings for the individual client devices in use by that board, i.e. whether
 they require certain specific named states for dynamic pin configuration.
 
+请注意，引脚控制器本身也可能是自己的客户端设备。
+例如，当驱动程序加载时，引脚控制器可以设置自己为 "激活 "状态。
+这样就可以在一个地方表示电路板的静态引脚配置，而不是将其分割到多个客户设备节点上。
+是否这样做某种程度上取决于各个板子设备树文件的作者，以及由个别客户设备的绑定所提出的任何要求，
+也就是说，他们是否需要某些特定的命名状态来实现动态引脚配置。
+
 == Pinctrl client devices ==
+== Pinctrl客户端设备 ==
 
 For each client device individually, every pin state is assigned an integer
 ID. These numbers start at 0, and are contiguous. For each state ID, a unique
@@ -38,12 +61,22 @@ property exists to define the pin configuration. Each state may also be
 assigned a name. When names are used, another property exists to map from
 those names to the integer IDs.
 
+对于每个客户设备，每个引脚状态都被分配一个整数的ID。
+这些数字从0开始，并且是连续的。
+对于每个状态ID，都有一个唯一的属性来定义引脚的配置。
+每个状态也可以被指定一个名称。
+当使用名称时，存在另一个属性来将这些名称映射到整数ID。
+
 Each client device's own binding determines the set of states that must be
 defined in its device tree node, and whether to define the set of state
 IDs that must be provided, or whether to define the set of state names that
 must be provided.
 
+每个客户设备自己的绑定决定了必须在其设备树节点中定义的状态集，
+以及是否定义必须提供的状态ID集，或者是否定义必须提供的状态名称集。
+
 Required properties:
+必需属性：
 pinctrl-0:	List of phandles, each pointing at a pin configuration
 		node. These referenced pin configuration nodes must be child
 		nodes of the pin controller that they configure. Multiple
@@ -54,6 +87,12 @@ pinctrl-0:	List of phandles, each pointing at a pin configuration
 		section of this document for details of the format of these
 		pin configuration nodes.
 
+		phandle列表，每个phandle都指向一个引脚配置的节点。
+		这些引用的引脚配置节点必须是引脚控制器配置的子节点。
+		多个条目可以存在于这个列表中，这样就可以配置多个引脚控制器，
+		或者可以从一个引脚控制器的多个节点中建立一个状态，每个节点都是整个配置的一部分。
+		引脚配置节点的格式详情，请见本文下一节。
+
 		In some cases, it may be useful to define a state, but for it
 		to be empty. This may be required when a common IP block is
 		used in an SoC either without a pin controller, or where the
@@ -61,15 +100,23 @@ pinctrl-0:	List of phandles, each pointing at a pin configuration
 		the binding for that IP block requires certain pin states to
 		exist, they must still be defined, but may be left empty.
 
+		在某些场景下，定义一个空的状态可能是有用的。
+		当SoC中使用一个公共的IP模块而没有引脚控制器时，或者引脚控制器不影响相关的硬件模块时，可能需要这样做。
+		如果该IP模块的绑定要求某些引脚状态存在，它们仍然必须被定义，但可以留空。
+
 Optional properties:
+可选属性：
 pinctrl-1:	List of phandles, each pointing at a pin configuration
 		node within a pin controller.
+		phandle列表，每个phandle都指向一个引脚控制器的引脚配置节点。
 ...
 pinctrl-n:	List of phandles, each pointing at a pin configuration
 		node within a pin controller.
 pinctrl-names:	The list of names to assign states. List entry 0 defines the
 		name for integer state ID 0, list entry 1 for state ID 1, and
 		so on.
+
+		用于分配状态的名称列表。列表条目0定义了整数状态ID 0的名称，列表条目1定义了状态ID 1，以此类推。
 
 For example:
 
@@ -97,13 +144,16 @@ For example:
 	};
 
 == Pin controller devices ==
+== 引脚控制器设备 ==
 
 See pinctrl.yaml
 
 == Generic pin multiplexing node content ==
+== 通用引脚复用节点内容 ==
 
 See pinmux-node.yaml
 
 == Generic pin configuration node content ==
+== 通用引脚配置节点内容 ==
 
 See pincfg-node.yaml
