@@ -14,16 +14,25 @@ description: |
   Pin controller devices should contain the pin configuration nodes that client
   devices reference.
 
+  引脚控制器设备应该包含客户端设备引用的引脚配置节点
+
   The contents of each of those pin configuration child nodes is defined
   entirely by the binding for the individual pin controller device. There
   exists no common standard for this content. The pinctrl framework only
   provides generic helper bindings that the pin controller driver can use.
+
+  每个引脚配置子节点的内容完全由各引脚控制器的绑定定义的。
+  规范没有定义该内容。
+  pinctrl框架仅提供引脚控制器驱动可用的通用helper绑定。
 
   The pin configuration nodes need not be direct children of the pin controller
   device; they may be grandchildren, for example. Whether this is legal, and
   whether there is any interaction between the child and intermediate parent
   nodes, is again defined entirely by the binding for the individual pin
   controller device.
+
+  引脚配置节点没必要是引脚控制器设备的一级子节点；他们也许是孙子节点，
+  例如，这是否合法，以及子节点和中间父节点之间是否有任何互动，完全由各个引脚控制器设备的绑定来定义。
 
 properties:
   $nodename:
@@ -34,7 +43,10 @@ properties:
       Number of pin control cells in addition to the index within the pin
       controller device instance.
 
+      引脚控制单元的数量，此外还有引脚控制器设备实例中的索引。
+
   pinctrl-use-default:
+  pinctrl默认用法：
     type: boolean
     description: >
       Indicates that the OS can use the boot default pin configuration. This
@@ -42,4 +54,9 @@ properties:
       This property can be set either globally for the pin controller or in
       child nodes for individual pin group control.
 
+      表示操作系统可以直接使用启动默认引脚配置。
+      允许使用没有引脚控制器驱动程序的操作系统。
+      这个属性可以在全局范围内被引脚控制器配置，也可以在子节点中被单个引脚组控制配置。
+
 additionalProperties: true
+附加属性：
