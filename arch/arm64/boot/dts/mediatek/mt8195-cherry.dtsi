@@ -22,6 +22,16 @@
 		serial0 = &uart0;
 	};
 
+	backlight_lcd0: backlight-lcd0 {
+		compatible = "pwm-backlight";
+		brightness-levels = <0 1023>;
+		default-brightness-level = <576>;
+		enable-gpios = <&pio 82 GPIO_ACTIVE_HIGH>;
+		num-interpolated-steps = <1023>;
+		pwms = <&disp_pwm0 0 500000>;
+		power-supply = <&ppvar_sys>;
+	};
+
 	chosen {
 		stdout-path = "serial0:115200n8";
 	};
@@ -35,6 +45,19 @@
 	memory@40000000 {
 		device_type = "memory";
 		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	pp3300_disp_x: regulator-pp3300-disp-x {
+		compatible = "regulator-fixed";
+		regulator-name = "pp3300_disp_x";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-enable-ramp-delay = <2500>;
+		enable-active-high;
+		gpio = <&pio 55 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_fixed_pins>;
+		vin-supply = <&pp3300_z2>;
 	};
 
 	/* system wide LDO 3.3V power rail */
@@ -207,9 +230,30 @@
 			reg = <1>;
 			edp_out: endpoint {
 				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&panel_in>;
 			};
 		};
 	};
+
+	aux-bus {
+		panel {
+			compatible = "edp-panel";
+			power-supply = <&pp3300_disp_x>;
+			backlight = <&backlight_lcd0>;
+			port {
+				panel_in: endpoint {
+					remote-endpoint = <&edp_out>;
+				};
+			};
+		};
+	};
+};
+
+&disp_pwm0 {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&disp_pwm0_pin_default>;
 };
 
 &dp_tx {
@@ -236,6 +280,15 @@
 			};
 		};
 	};
+};
+
+&gic {
+	mediatek,broken-save-restore-fw;
+};
+
+&gpu {
+	status = "okay";
+	mali-supply = <&mt6315_7_vbuck1>;
 };
 
 &i2c0 {
@@ -440,6 +493,13 @@
 		spi-rx-bus-width = <2>;
 		spi-tx-bus-width = <2>;
 	};
+};
+
+&pcie1 {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie1_pins_default>;
 };
 
 &pio {
@@ -648,6 +708,13 @@
 		};
 	};
 
+	disp_pwm0_pin_default: disp-pwm0-default-pins {
+		pins-disp-pwm {
+			pinmux = <PINMUX_GPIO82__FUNC_GPIO82>,
+				 <PINMUX_GPIO97__FUNC_DISP_PWM0>;
+		};
+	};
+
 	dptx_pin: dptx-default-pins {
 		pins-cmd-dat {
 			pinmux = <PINMUX_GPIO18__FUNC_DP_TX_HPD>;
@@ -820,6 +887,30 @@
 			pinmux = <PINMUX_GPIO140__FUNC_SPINOR_CS>;
 			drive-strength = <6>;
 			bias-pull-up;
+		};
+	};
+
+	pcie0_pins_default: pcie0-default-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO19__FUNC_WAKEN>,
+				 <PINMUX_GPIO20__FUNC_PERSTN>,
+				 <PINMUX_GPIO21__FUNC_CLKREQN>;
+				 bias-pull-up;
+		};
+	};
+
+	pcie1_pins_default: pcie1-default-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO22__FUNC_PERSTN_1>,
+				 <PINMUX_GPIO23__FUNC_CLKREQN_1>,
+				 <PINMUX_GPIO24__FUNC_WAKEN_1>;
+				 bias-pull-up;
+		};
+	};
+
+	panel_fixed_pins: panel-pwr-default-pins {
+		pins-vreg-en {
+			pinmux = <PINMUX_GPIO55__FUNC_GPIO55>;
 		};
 	};
 

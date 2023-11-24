@@ -193,10 +193,11 @@ static void ath12k_dp_rxdesc_set_msdu_len(struct ath12k_base *ab,
 	ab->hw_params->hal_ops->rx_desc_set_msdu_len(desc, len);
 }
 
-static bool ath12k_dp_rx_h_is_mcbc(struct ath12k_base *ab,
-				   struct hal_rx_desc *desc)
+static bool ath12k_dp_rx_h_is_da_mcbc(struct ath12k_base *ab,
+				      struct hal_rx_desc *desc)
 {
-	return ab->hw_params->hal_ops->rx_desc_is_mcbc(desc);
+	return (ath12k_dp_rx_h_first_msdu(ab, desc) &&
+		ab->hw_params->hal_ops->rx_desc_is_da_mcbc(desc));
 }
 
 static bool ath12k_dp_rxdesc_mac_addr2_valid(struct ath12k_base *ab,
@@ -977,7 +978,19 @@ int ath12k_dp_rx_peer_tid_setup(struct ath12k *ar, const u8 *peer_mac, int vdev_
 			return ret;
 		}
 
-		return ret;
+		if (!ab->hw_params->reoq_lut_support) {
+			ret = ath12k_wmi_peer_rx_reorder_queue_setup(ar, vdev_id,
+								     peer_mac,
+								     paddr, tid, 1,
+								     ba_win_sz);
+			if (ret) {
+				ath12k_warn(ab, "failed to setup peer rx reorder queuefor tid %d: %d\n",
+					    tid, ret);
+				return ret;
+			}
+		}
+
+		return 0;
 	}
 
 	rx_tid->tid = tid;
@@ -1041,7 +1054,7 @@ int ath12k_dp_rx_ampdu_start(struct ath12k *ar,
 			     struct ieee80211_ampdu_params *params)
 {
 	struct ath12k_base *ab = ar->ab;
-	struct ath12k_sta *arsta = (void *)params->sta->drv_priv;
+	struct ath12k_sta *arsta = ath12k_sta_to_arsta(params->sta);
 	int vdev_id = arsta->arvif->vdev_id;
 	int ret;
 
@@ -1059,7 +1072,7 @@ int ath12k_dp_rx_ampdu_stop(struct ath12k *ar,
 {
 	struct ath12k_base *ab = ar->ab;
 	struct ath12k_peer *peer;
-	struct ath12k_sta *arsta = (void *)params->sta->drv_priv;
+	struct ath12k_sta *arsta = ath12k_sta_to_arsta(params->sta);
 	int vdev_id = arsta->arvif->vdev_id;
 	bool active;
 	int ret;
@@ -1361,11 +1374,6 @@ ath12k_update_per_peer_tx_stats(struct ath12k *ar,
 	 * Firmware rate's control to be skipped for this?
 	 */
 
-	if (flags == WMI_RATE_PREAMBLE_HE && mcs > 11) {
-		ath12k_warn(ab, "Invalid HE mcs %d peer stats",  mcs);
-		return;
-	}
-
 	if (flags == WMI_RATE_PREAMBLE_HE && mcs > ATH12K_HE_MCS_MAX) {
 		ath12k_warn(ab, "Invalid HE mcs %d peer stats",  mcs);
 		return;
@@ -1402,7 +1410,7 @@ ath12k_update_per_peer_tx_stats(struct ath12k *ar,
 	}
 
 	sta = peer->sta;
-	arsta = (struct ath12k_sta *)sta->drv_priv;
+	arsta = ath12k_sta_to_arsta(sta);
 
 	memset(&arsta->txrate, 0, sizeof(arsta->txrate));
 
@@ -1547,6 +1555,13 @@ static int ath12k_htt_pull_ppdu_stats(struct ath12k_base *ab,
 
 	msg = (struct ath12k_htt_ppdu_stats_msg *)skb->data;
 	len = le32_get_bits(msg->info, HTT_T2H_PPDU_STATS_INFO_PAYLOAD_SIZE);
+	if (len > (skb->len - struct_size(msg, data, 0))) {
+		ath12k_warn(ab,
+			    "HTT PPDU STATS event has unexpected payload size %u, should be smaller than %u\n",
+			    len, skb->len);
+		return -EINVAL;
+	}
+
 	pdev_id = le32_get_bits(msg->info, HTT_T2H_PPDU_STATS_INFO_PDEV_ID);
 	ppdu_id = le32_to_cpu(msg->ppdu_id);
 
@@ -1572,6 +1587,16 @@ static int ath12k_htt_pull_ppdu_stats(struct ath12k_base *ab,
 	if (ret) {
 		spin_unlock_bh(&ar->data_lock);
 		ath12k_warn(ab, "Failed to parse tlv %d\n", ret);
+		goto exit;
+	}
+
+	if (ppdu_info->ppdu_stats.common.num_users >= HTT_PPDU_STATS_MAX_USERS) {
+		spin_unlock_bh(&ar->data_lock);
+		ath12k_warn(ab,
+			    "HTT PPDU STATS event has unexpected num_users %u, should be smaller than %u\n",
+			    ppdu_info->ppdu_stats.common.num_users,
+			    HTT_PPDU_STATS_MAX_USERS);
+		ret = -EINVAL;
 		goto exit;
 	}
 
@@ -1633,11 +1658,12 @@ static void ath12k_htt_mlo_offset_event_handler(struct ath12k_base *ab,
 	msg = (struct ath12k_htt_mlo_offset_msg *)skb->data;
 	pdev_id = u32_get_bits(__le32_to_cpu(msg->info),
 			       HTT_T2H_MLO_OFFSET_INFO_PDEV_ID);
-	ar = ath12k_mac_get_ar_by_pdev_id(ab, pdev_id);
 
+	rcu_read_lock();
+	ar = ath12k_mac_get_ar_by_pdev_id(ab, pdev_id);
 	if (!ar) {
 		ath12k_warn(ab, "invalid pdev id %d on htt mlo offset\n", pdev_id);
-		return;
+		goto exit;
 	}
 
 	spin_lock_bh(&ar->data_lock);
@@ -1653,6 +1679,8 @@ static void ath12k_htt_mlo_offset_event_handler(struct ath12k_base *ab,
 	pdev->timestamp.mlo_comp_timer = __le32_to_cpu(msg->mlo_comp_timer);
 
 	spin_unlock_bh(&ar->data_lock);
+exit:
+	rcu_read_unlock();
 }
 
 void ath12k_dp_htt_htc_t2h_msg_handler(struct ath12k_base *ab,
@@ -2200,7 +2228,7 @@ static void ath12k_dp_rx_h_mpdu(struct ath12k *ar,
 
 	/* PN for multicast packets will be checked in mac80211 */
 	rxcb = ATH12K_SKB_RXCB(msdu);
-	fill_crypto_hdr = ath12k_dp_rx_h_is_mcbc(ar->ab, rx_desc);
+	fill_crypto_hdr = ath12k_dp_rx_h_is_da_mcbc(ar->ab, rx_desc);
 	rxcb->is_mcbc = fill_crypto_hdr;
 
 	if (rxcb->is_mcbc)
@@ -2443,7 +2471,7 @@ static void ath12k_dp_rx_deliver_msdu(struct ath12k *ar, struct napi_struct *nap
 
 	/* PN for multicast packets are not validate in HW,
 	 * so skip 802.3 rx path
-	 * Also, fast_rx expectes the STA to be authorized, hence
+	 * Also, fast_rx expects the STA to be authorized, hence
 	 * eapol packets are sent in slow path.
 	 */
 	if (decap == DP_RX_DECAP_TYPE_ETHERNET2_DIX && !is_eapol &&
@@ -2531,7 +2559,7 @@ static void ath12k_dp_rx_process_received_packets(struct ath12k_base *ab,
 	struct ath12k_skb_rxcb *rxcb;
 	struct sk_buff *msdu;
 	struct ath12k *ar;
-	u8 mac_id;
+	u8 mac_id, pdev_id;
 	int ret;
 
 	if (skb_queue_empty(msdu_list))
@@ -2542,8 +2570,9 @@ static void ath12k_dp_rx_process_received_packets(struct ath12k_base *ab,
 	while ((msdu = __skb_dequeue(msdu_list))) {
 		rxcb = ATH12K_SKB_RXCB(msdu);
 		mac_id = rxcb->mac_id;
-		ar = ab->pdevs[mac_id].ar;
-		if (!rcu_dereference(ab->pdevs_active[mac_id])) {
+		pdev_id = ath12k_hw_mac_id_to_pdev_id(ab->hw_params, mac_id);
+		ar = ab->pdevs[pdev_id].ar;
+		if (!rcu_dereference(ab->pdevs_active[pdev_id])) {
 			dev_kfree_skb_any(msdu);
 			continue;
 		}
@@ -2611,7 +2640,7 @@ try_again:
 		if (!desc_info) {
 			desc_info = ath12k_dp_get_rx_desc(ab, cookie);
 			if (!desc_info) {
-				ath12k_warn(ab, "Invalid cookie in manual desc retrival");
+				ath12k_warn(ab, "Invalid cookie in manual desc retrieval");
 				continue;
 			}
 		}
@@ -2739,6 +2768,7 @@ int ath12k_dp_rx_peer_frag_setup(struct ath12k *ar, const u8 *peer_mac, int vdev
 	}
 
 	peer->tfm_mmic = tfm;
+	peer->dp_setup_done = true;
 	spin_unlock_bh(&ab->base_lock);
 
 	return 0;
@@ -3018,7 +3048,7 @@ static int ath12k_dp_rx_h_defrag_reo_reinject(struct ath12k *ar,
 					desc_info->cookie,
 					HAL_RX_BUF_RBM_SW3_BM);
 
-	/* Fill mpdu details into reo entrace ring */
+	/* Fill mpdu details into reo entrance ring */
 	srng = &ab->hal.srng_list[dp->reo_reinject_ring.ring_id];
 
 	spin_lock_bh(&srng->lock);
@@ -3047,10 +3077,14 @@ static int ath12k_dp_rx_h_defrag_reo_reinject(struct ath12k *ar,
 	reo_ent_ring->rx_mpdu_info.peer_meta_data =
 		reo_dest_ring->rx_mpdu_info.peer_meta_data;
 
-	reo_ent_ring->queue_addr_lo = cpu_to_le32(lower_32_bits(rx_tid->paddr));
-	reo_ent_ring->info0 = le32_encode_bits(upper_32_bits(rx_tid->paddr),
-					       HAL_REO_ENTR_RING_INFO0_QUEUE_ADDR_HI) |
-		le32_encode_bits(dst_ind, HAL_REO_ENTR_RING_INFO0_DEST_IND);
+	/* Firmware expects physical address to be filled in queue_addr_lo in
+	 * the MLO scenario and in case of non MLO peer meta data needs to be
+	 * filled.
+	 * TODO: Need to handle for MLO scenario.
+	 */
+	reo_ent_ring->queue_addr_lo = reo_dest_ring->rx_mpdu_info.peer_meta_data;
+	reo_ent_ring->info0 = le32_encode_bits(dst_ind,
+					       HAL_REO_ENTR_RING_INFO0_DEST_IND);
 
 	reo_ent_ring->info1 = le32_encode_bits(rx_tid->cur_sn,
 					       HAL_REO_ENTR_RING_INFO1_MPDU_SEQ_NUM);
@@ -3201,6 +3235,14 @@ static int ath12k_dp_rx_frag_h_mpdu(struct ath12k *ar,
 		ret = -ENOENT;
 		goto out_unlock;
 	}
+
+	if (!peer->dp_setup_done) {
+		ath12k_warn(ab, "The peer %pM [%d] has uninitialized datapath\n",
+			    peer->addr, peer_id);
+		ret = -ENOENT;
+		goto out_unlock;
+	}
+
 	rx_tid = &peer->rx_tid[tid];
 
 	if ((!skb_queue_empty(&rx_tid->rx_frags) && seqno != rx_tid->cur_sn) ||
@@ -3216,7 +3258,7 @@ static int ath12k_dp_rx_frag_h_mpdu(struct ath12k *ar,
 		goto out_unlock;
 	}
 
-	if (frag_no > __fls(rx_tid->rx_frag_bitmap))
+	if ((!rx_tid->rx_frag_bitmap || frag_no > __fls(rx_tid->rx_frag_bitmap)))
 		__skb_queue_tail(&rx_tid->rx_frags, msdu);
 	else
 		ath12k_dp_rx_h_sort_frags(ab, &rx_tid->rx_frags, msdu);
@@ -3297,7 +3339,7 @@ ath12k_dp_process_rx_err_buf(struct ath12k *ar, struct hal_reo_dest_ring *desc,
 	if (!desc_info) {
 		desc_info = ath12k_dp_get_rx_desc(ab, cookie);
 		if (!desc_info) {
-			ath12k_warn(ab, "Invalid cookie in manual desc retrival");
+			ath12k_warn(ab, "Invalid cookie in manual desc retrieval");
 			return -EINVAL;
 		}
 	}
@@ -3373,6 +3415,7 @@ int ath12k_dp_rx_process_err(struct ath12k_base *ab, struct napi_struct *napi,
 	dma_addr_t paddr;
 	bool is_frag;
 	bool drop = false;
+	int pdev_id;
 
 	tot_n_bufs_reaped = 0;
 	quota = budget;
@@ -3428,7 +3471,8 @@ int ath12k_dp_rx_process_err(struct ath12k_base *ab, struct napi_struct *napi,
 			mac_id = le32_get_bits(reo_desc->info0,
 					       HAL_REO_DEST_RING_INFO0_SRC_LINK_ID);
 
-			ar = ab->pdevs[mac_id].ar;
+			pdev_id = ath12k_hw_mac_id_to_pdev_id(ab->hw_params, mac_id);
+			ar = ab->pdevs[pdev_id].ar;
 
 			if (!ath12k_dp_process_rx_err_buf(ar, reo_desc, drop,
 							  msdu_cookies[i]))
@@ -3485,20 +3529,13 @@ static int ath12k_dp_rx_h_null_q_desc(struct ath12k *ar, struct sk_buff *msdu,
 				      struct sk_buff_head *msdu_list)
 {
 	struct ath12k_base *ab = ar->ab;
-	u16 msdu_len, peer_id;
+	u16 msdu_len;
 	struct hal_rx_desc *desc = (struct hal_rx_desc *)msdu->data;
 	u8 l3pad_bytes;
 	struct ath12k_skb_rxcb *rxcb = ATH12K_SKB_RXCB(msdu);
 	u32 hal_rx_desc_sz = ar->ab->hw_params->hal_desc_sz;
 
 	msdu_len = ath12k_dp_rx_h_msdu_len(ab, desc);
-	peer_id = ath12k_dp_rx_h_peer_id(ab, desc);
-
-	if (!ath12k_peer_find_by_id(ab, peer_id)) {
-		ath12k_dbg(ab, ATH12K_DBG_DATA, "invalid peer id received in wbm err pkt%d\n",
-			   peer_id);
-		return -EINVAL;
-	}
 
 	if (!rxcb->is_frag && ((msdu_len + hal_rx_desc_sz) > DP_RX_BUFFER_SIZE)) {
 		/* First buffer will be freed by the caller, so deduct it's length */
@@ -3712,13 +3749,13 @@ int ath12k_dp_rx_process_wbm_err(struct ath12k_base *ab,
 			continue;
 		}
 
-		desc_info = (struct ath12k_rx_desc_info *)err_info.rx_desc;
+		desc_info = err_info.rx_desc;
 
 		/* retry manual desc retrieval if hw cc is not done */
 		if (!desc_info) {
 			desc_info = ath12k_dp_get_rx_desc(ab, err_info.cookie);
 			if (!desc_info) {
-				ath12k_warn(ab, "Invalid cookie in manual desc retrival");
+				ath12k_warn(ab, "Invalid cookie in manual desc retrieval");
 				continue;
 			}
 		}

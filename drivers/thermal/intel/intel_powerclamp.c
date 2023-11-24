@@ -256,7 +256,7 @@ skip_limit_set:
 
 static const struct kernel_param_ops max_idle_ops = {
 	.set = max_idle_set,
-	.get = param_get_int,
+	.get = param_get_byte,
 };
 
 module_param_cb(max_idle, &max_idle_ops, &max_idle, 0644);
@@ -703,6 +703,10 @@ static int powerclamp_set_cur_state(struct thermal_cooling_device *cdev,
 
 	new_target_ratio = clamp(new_target_ratio, 0UL,
 				(unsigned long) (max_idle - 1));
+
+	if (powerclamp_data.target_ratio == new_target_ratio)
+		goto exit_set;
+
 	if (!powerclamp_data.target_ratio && new_target_ratio > 0) {
 		pr_info("Start idle injection to reduce power\n");
 		powerclamp_data.target_ratio = new_target_ratio;

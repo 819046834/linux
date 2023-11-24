@@ -15,7 +15,7 @@
 #include <linux/io.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
@@ -645,7 +645,7 @@ static void exynos7_tmu_control(struct platform_device *pdev, bool on)
 
 static int exynos_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct exynos_tmu_data *data = tz->devdata;
+	struct exynos_tmu_data *data = thermal_zone_device_priv(tz);
 	int value, ret = 0;
 
 	if (!data || !data->tmu_read)
@@ -723,7 +723,7 @@ static void exynos4412_tmu_set_emulation(struct exynos_tmu_data *data,
 
 static int exynos_tmu_set_emulation(struct thermal_zone_device *tz, int temp)
 {
-	struct exynos_tmu_data *data = tz->devdata;
+	struct exynos_tmu_data *data = thermal_zone_device_priv(tz);
 	int ret = -EINVAL;
 
 	if (data->soc == SOC_ARCH_EXYNOS4210)
@@ -887,7 +887,7 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 		return -EADDRNOTAVAIL;
 	}
 
-	data->soc = (enum soc_type)of_device_get_match_data(&pdev->dev);
+	data->soc = (uintptr_t)of_device_get_match_data(&pdev->dev);
 
 	switch (data->soc) {
 	case SOC_ARCH_EXYNOS4210:
@@ -1124,7 +1124,7 @@ err_sensor:
 	return ret;
 }
 
-static int exynos_tmu_remove(struct platform_device *pdev)
+static void exynos_tmu_remove(struct platform_device *pdev)
 {
 	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
 
@@ -1137,8 +1137,6 @@ static int exynos_tmu_remove(struct platform_device *pdev)
 
 	if (!IS_ERR(data->regulator))
 		regulator_disable(data->regulator);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1173,7 +1171,7 @@ static struct platform_driver exynos_tmu_driver = {
 		.of_match_table = exynos_tmu_match,
 	},
 	.probe = exynos_tmu_probe,
-	.remove	= exynos_tmu_remove,
+	.remove_new = exynos_tmu_remove,
 };
 
 module_platform_driver(exynos_tmu_driver);

@@ -54,8 +54,7 @@ static void pwm_backlight_power_on(struct pwm_bl_data *pb)
 	if (pb->post_pwm_on_delay)
 		msleep(pb->post_pwm_on_delay);
 
-	if (pb->enable_gpio)
-		gpiod_set_value_cansleep(pb->enable_gpio, 1);
+	gpiod_set_value_cansleep(pb->enable_gpio, 1);
 
 	pb->enabled = true;
 }
@@ -65,8 +64,7 @@ static void pwm_backlight_power_off(struct pwm_bl_data *pb)
 	if (!pb->enabled)
 		return;
 
-	if (pb->enable_gpio)
-		gpiod_set_value_cansleep(pb->enable_gpio, 0);
+	gpiod_set_value_cansleep(pb->enable_gpio, 0);
 
 	if (pb->pwm_off_delay)
 		msleep(pb->pwm_off_delay);
@@ -429,8 +427,7 @@ static int pwm_backlight_initial_power_state(const struct pwm_bl_data *pb)
 	 * Synchronize the enable_gpio with the observed state of the
 	 * hardware.
 	 */
-	if (pb->enable_gpio)
-		gpiod_direction_output(pb->enable_gpio, active);
+	gpiod_direction_output(pb->enable_gpio, active);
 
 	/*
 	 * Do not change pb->enabled here! pb->enabled essentially
@@ -625,26 +622,34 @@ err_alloc:
 	return ret;
 }
 
-static int pwm_backlight_remove(struct platform_device *pdev)
+static void pwm_backlight_remove(struct platform_device *pdev)
 {
 	struct backlight_device *bl = platform_get_drvdata(pdev);
 	struct pwm_bl_data *pb = bl_get_data(bl);
+	struct pwm_state state;
 
 	backlight_device_unregister(bl);
 	pwm_backlight_power_off(pb);
+	pwm_get_state(pb->pwm, &state);
+	state.duty_cycle = 0;
+	state.enabled = false;
+	pwm_apply_state(pb->pwm, &state);
 
 	if (pb->exit)
 		pb->exit(&pdev->dev);
-
-	return 0;
 }
 
 static void pwm_backlight_shutdown(struct platform_device *pdev)
 {
 	struct backlight_device *bl = platform_get_drvdata(pdev);
 	struct pwm_bl_data *pb = bl_get_data(bl);
+	struct pwm_state state;
 
 	pwm_backlight_power_off(pb);
+	pwm_get_state(pb->pwm, &state);
+	state.duty_cycle = 0;
+	state.enabled = false;
+	pwm_apply_state(pb->pwm, &state);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -652,11 +657,23 @@ static int pwm_backlight_suspend(struct device *dev)
 {
 	struct backlight_device *bl = dev_get_drvdata(dev);
 	struct pwm_bl_data *pb = bl_get_data(bl);
+	struct pwm_state state;
 
 	if (pb->notify)
 		pb->notify(pb->dev, 0);
 
 	pwm_backlight_power_off(pb);
+
+	/*
+	 * Note that disabling the PWM doesn't guarantee that the output stays
+	 * at its inactive state. However without the PWM disabled, the PWM
+	 * driver refuses to suspend. So disable here even though this might
+	 * enable the backlight on poorly designed boards.
+	 */
+	pwm_get_state(pb->pwm, &state);
+	state.duty_cycle = 0;
+	state.enabled = false;
+	pwm_apply_state(pb->pwm, &state);
 
 	if (pb->notify_after)
 		pb->notify_after(pb->dev, 0);
@@ -690,7 +707,7 @@ static struct platform_driver pwm_backlight_driver = {
 		.of_match_table	= of_match_ptr(pwm_backlight_of_match),
 	},
 	.probe		= pwm_backlight_probe,
-	.remove		= pwm_backlight_remove,
+	.remove_new	= pwm_backlight_remove,
 	.shutdown	= pwm_backlight_shutdown,
 };
 

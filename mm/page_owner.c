@@ -104,7 +104,7 @@ struct page_ext_operations page_owner_ops = {
 
 static inline struct page_owner *get_page_owner(struct page_ext *page_ext)
 {
-	return (void *)page_ext + page_owner_ops.offset;
+	return page_ext_data(page_ext, &page_owner_ops);
 }
 
 static noinline depot_stack_handle_t save_stack(gfp_t flags)
@@ -315,7 +315,7 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 				unsigned long freepage_order;
 
 				freepage_order = buddy_order_unsafe(page);
-				if (freepage_order < MAX_ORDER)
+				if (freepage_order <= MAX_ORDER)
 					pfn += (1UL << freepage_order) - 1;
 				continue;
 			}
@@ -408,17 +408,17 @@ print_page_owner(char __user *buf, size_t count, unsigned long pfn,
 		return -ENOMEM;
 
 	ret = scnprintf(kbuf, count,
-			"Page allocated via order %u, mask %#x(%pGg), pid %d, tgid %d (%s), ts %llu ns, free_ts %llu ns\n",
+			"Page allocated via order %u, mask %#x(%pGg), pid %d, tgid %d (%s), ts %llu ns\n",
 			page_owner->order, page_owner->gfp_mask,
 			&page_owner->gfp_mask, page_owner->pid,
 			page_owner->tgid, page_owner->comm,
-			page_owner->ts_nsec, page_owner->free_ts_nsec);
+			page_owner->ts_nsec);
 
 	/* Print information relevant to grouping pages by mobility */
 	pageblock_mt = get_pageblock_migratetype(page);
 	page_mt  = gfp_migratetype(page_owner->gfp_mask);
 	ret += scnprintf(kbuf + ret, count - ret,
-			"PFN %lu type %s Block %lu type %s Flags %pGp\n",
+			"PFN 0x%lx type %s Block %lu type %s Flags %pGp\n",
 			pfn,
 			migratetype_names[page_mt],
 			pfn >> pageblock_order,
@@ -549,7 +549,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 		if (PageBuddy(page)) {
 			unsigned long freepage_order = buddy_order_unsafe(page);
 
-			if (freepage_order < MAX_ORDER)
+			if (freepage_order <= MAX_ORDER)
 				pfn += (1UL << freepage_order) - 1;
 			continue;
 		}
@@ -657,7 +657,7 @@ static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 			if (PageBuddy(page)) {
 				unsigned long order = buddy_order_unsafe(page);
 
-				if (order > 0 && order < MAX_ORDER)
+				if (order > 0 && order <= MAX_ORDER)
 					pfn += (1UL << order) - 1;
 				continue;
 			}

@@ -112,10 +112,10 @@ static void __init fanotify_sysctls_init(void)
 
 extern const struct fsnotify_ops fanotify_fsnotify_ops;
 
-struct kmem_cache *fanotify_mark_cache __read_mostly;
-struct kmem_cache *fanotify_fid_event_cachep __read_mostly;
-struct kmem_cache *fanotify_path_event_cachep __read_mostly;
-struct kmem_cache *fanotify_perm_event_cachep __read_mostly;
+struct kmem_cache *fanotify_mark_cache __ro_after_init;
+struct kmem_cache *fanotify_fid_event_cachep __ro_after_init;
+struct kmem_cache *fanotify_path_event_cachep __ro_after_init;
+struct kmem_cache *fanotify_perm_event_cachep __ro_after_init;
 
 #define FANOTIFY_EVENT_ALIGN 4
 #define FANOTIFY_FID_INFO_HDR_LEN \
@@ -663,7 +663,7 @@ static ssize_t copy_event_to_user(struct fsnotify_group *group,
 	struct fanotify_info *info = fanotify_event_info(event);
 	unsigned int info_mode = FAN_GROUP_FLAG(group, FANOTIFY_INFO_MODES);
 	unsigned int pidfd_mode = info_mode & FAN_REPORT_PIDFD;
-	struct file *f = NULL;
+	struct file *f = NULL, *pidfd_file = NULL;
 	int ret, pidfd = FAN_NOPIDFD, fd = FAN_NOFD;
 
 	pr_debug("%s: group=%p event=%p\n", __func__, group, event);
@@ -718,7 +718,7 @@ static ssize_t copy_event_to_user(struct fsnotify_group *group,
 		    !pid_has_task(event->pid, PIDTYPE_TGID)) {
 			pidfd = FAN_NOPIDFD;
 		} else {
-			pidfd = pidfd_create(event->pid, 0);
+			pidfd = pidfd_prepare(event->pid, 0, &pidfd_file);
 			if (pidfd < 0)
 				pidfd = FAN_EPIDFD;
 		}
@@ -751,6 +751,9 @@ static ssize_t copy_event_to_user(struct fsnotify_group *group,
 	if (f)
 		fd_install(fd, f);
 
+	if (pidfd_file)
+		fd_install(pidfd, pidfd_file);
+
 	return metadata.event_len;
 
 out_close_fd:
@@ -759,8 +762,10 @@ out_close_fd:
 		fput(f);
 	}
 
-	if (pidfd >= 0)
-		close_fd(pidfd);
+	if (pidfd >= 0) {
+		put_unused_fd(pidfd);
+		fput(pidfd_file);
+	}
 
 	return ret;
 }
@@ -1580,17 +1585,25 @@ static int fanotify_test_fsid(struct dentry *dentry, __kernel_fsid_t *fsid)
 }
 
 /* Check if filesystem can encode a unique fid */
-static int fanotify_test_fid(struct dentry *dentry)
+static int fanotify_test_fid(struct dentry *dentry, unsigned int flags)
 {
+	unsigned int mark_type = flags & FANOTIFY_MARK_TYPE_BITS;
+	const struct export_operations *nop = dentry->d_sb->s_export_op;
+
 	/*
-	 * We need to make sure that the file system supports at least
-	 * encoding a file handle so user can use name_to_handle_at() to
-	 * compare fid returned with event to the file handle of watched
-	 * objects. However, name_to_handle_at() requires that the
-	 * filesystem also supports decoding file handles.
+	 * We need to make sure that the filesystem supports encoding of
+	 * file handles so user can use name_to_handle_at() to compare fids
+	 * reported with events to the file handle of watched objects.
 	 */
-	if (!dentry->d_sb->s_export_op ||
-	    !dentry->d_sb->s_export_op->fh_to_dentry)
+	if (!exportfs_can_encode_fid(nop))
+		return -EOPNOTSUPP;
+
+	/*
+	 * For sb/mount mark, we also need to make sure that the filesystem
+	 * supports decoding file handles, so user has a way to map back the
+	 * reported fids to filesystem objects.
+	 */
+	if (mark_type != FAN_MARK_INODE && !exportfs_can_decode_fh(nop))
 		return -EOPNOTSUPP;
 
 	return 0;
@@ -1616,6 +1629,20 @@ static int fanotify_events_supported(struct fsnotify_group *group,
 	 */
 	if (mask & FANOTIFY_PERM_EVENTS &&
 	    path->mnt->mnt_sb->s_type->fs_flags & FS_DISALLOW_NOTIFY_PERM)
+		return -EINVAL;
+
+	/*
+	 * mount and sb marks are not allowed on kernel internal pseudo fs,
+	 * like pipe_mnt, because that would subscribe to events on all the
+	 * anonynous pipes in the system.
+	 *
+	 * SB_NOUSER covers all of the internal pseudo fs whose objects are not
+	 * exposed to user's mount namespace, but there are other SB_KERNMOUNT
+	 * fs, like nsfs, debugfs, for which the value of allowing sb and mount
+	 * mark is questionable. For now we leave them alone.
+	 */
+	if (mark_type != FAN_MARK_INODE &&
+	    path->mnt->mnt_sb->s_flags & SB_NOUSER)
 		return -EINVAL;
 
 	/*
@@ -1794,7 +1821,7 @@ static int do_fanotify_mark(int fanotify_fd, unsigned int flags, __u64 mask,
 		if (ret)
 			goto path_put_and_out;
 
-		ret = fanotify_test_fid(path.dentry);
+		ret = fanotify_test_fid(path.dentry, flags);
 		if (ret)
 			goto path_put_and_out;
 

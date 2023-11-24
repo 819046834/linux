@@ -9,7 +9,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -201,8 +201,6 @@ struct imx296 {
 	const struct imx296_clk_params *clk_params;
 	bool mono;
 
-	bool streaming;
-
 	struct v4l2_subdev subdev;
 	struct media_pad pad;
 
@@ -321,7 +319,7 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 	unsigned int vmax;
 	int ret = 0;
 
-	if (!sensor->streaming)
+	if (!pm_runtime_get_if_in_use(sensor->dev))
 		return 0;
 
 	state = v4l2_subdev_get_locked_active_state(&sensor->subdev);
@@ -375,6 +373,8 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = -EINVAL;
 		break;
 	}
+
+	pm_runtime_put(sensor->dev);
 
 	return ret;
 }
@@ -607,8 +607,6 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 		pm_runtime_mark_last_busy(sensor->dev);
 		pm_runtime_put_autosuspend(sensor->dev);
 
-		sensor->streaming = false;
-
 		goto unlock;
 	}
 
@@ -619,13 +617,6 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = imx296_setup(sensor, state);
 	if (ret < 0)
 		goto err_pm;
-
-	/*
-	 * Set streaming to true to ensure __v4l2_ctrl_handler_setup() will set
-	 * the controls. The flag is reset to false further down if an error
-	 * occurs.
-	 */
-	sensor->streaming = true;
 
 	ret = __v4l2_ctrl_handler_setup(&sensor->ctrls);
 	if (ret < 0)
@@ -646,7 +637,6 @@ err_pm:
 	 * likely has no other chance to recover.
 	 */
 	pm_runtime_put_sync(sensor->dev);
-	sensor->streaming = false;
 
 	goto unlock;
 }
@@ -681,15 +671,6 @@ static int imx296_enum_frame_size(struct v4l2_subdev *sd,
 	fse->max_width = fse->min_width;
 	fse->min_height = IMX296_PIXEL_ARRAY_HEIGHT / (fse->index + 1);
 	fse->max_height = fse->min_height;
-
-	return 0;
-}
-
-static int imx296_get_format(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_state *state,
-			     struct v4l2_subdev_format *fmt)
-{
-	fmt->format = *v4l2_subdev_get_pad_format(sd, state, fmt->pad);
 
 	return 0;
 }
@@ -845,7 +826,7 @@ static const struct v4l2_subdev_video_ops imx296_subdev_video_ops = {
 static const struct v4l2_subdev_pad_ops imx296_subdev_pad_ops = {
 	.enum_mbus_code = imx296_enum_mbus_code,
 	.enum_frame_size = imx296_enum_frame_size,
-	.get_fmt = imx296_get_format,
+	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = imx296_set_format,
 	.get_selection = imx296_get_selection,
 	.set_selection = imx296_set_selection,
@@ -931,9 +912,11 @@ static int imx296_read_temperature(struct imx296 *sensor, int *temp)
 	if (ret < 0)
 		return ret;
 
-	tmdout = imx296_read(sensor, IMX296_TMDOUT) & IMX296_TMDOUT_MASK;
+	tmdout = imx296_read(sensor, IMX296_TMDOUT);
 	if (tmdout < 0)
 		return tmdout;
+
+	tmdout &= IMX296_TMDOUT_MASK;
 
 	/* T(°C) = 246.312 - 0.304 * TMDOUT */;
 	*temp = 246312 - 304 * tmdout;
@@ -1161,7 +1144,7 @@ static struct i2c_driver imx296_i2c_driver = {
 		.name = "imx296",
 		.pm = &imx296_pm_ops
 	},
-	.probe_new = imx296_probe,
+	.probe = imx296_probe,
 	.remove = imx296_remove,
 };
 

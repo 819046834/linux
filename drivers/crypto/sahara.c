@@ -27,7 +27,6 @@
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 
@@ -1035,7 +1034,7 @@ static int sahara_sha_process(struct ahash_request *req)
 
 static int sahara_queue_manage(void *data)
 {
-	struct sahara_dev *dev = (struct sahara_dev *)data;
+	struct sahara_dev *dev = data;
 	struct crypto_async_request *async_req;
 	struct crypto_async_request *backlog;
 	int ret = 0;
@@ -1270,7 +1269,7 @@ static struct ahash_alg sha_v4_algs[] = {
 
 static irqreturn_t sahara_irq_handler(int irq, void *data)
 {
-	struct sahara_dev *dev = (struct sahara_dev *)data;
+	struct sahara_dev *dev = data;
 	unsigned int stat = sahara_read(dev, SAHARA_REG_STATUS);
 	unsigned int err = sahara_read(dev, SAHARA_REG_ERRSTATUS);
 
@@ -1511,7 +1510,7 @@ clk_ipg_disable:
 	return err;
 }
 
-static int sahara_remove(struct platform_device *pdev)
+static void sahara_remove(struct platform_device *pdev)
 {
 	struct sahara_dev *dev = platform_get_drvdata(pdev);
 
@@ -1523,13 +1522,11 @@ static int sahara_remove(struct platform_device *pdev)
 	clk_disable_unprepare(dev->clk_ahb);
 
 	dev_ptr = NULL;
-
-	return 0;
 }
 
 static struct platform_driver sahara_driver = {
 	.probe		= sahara_probe,
-	.remove		= sahara_remove,
+	.remove_new	= sahara_remove,
 	.driver		= {
 		.name	= SAHARA_NAME,
 		.of_match_table = sahara_dt_ids,

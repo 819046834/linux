@@ -57,6 +57,7 @@ Other guides to the community that are of interest to most developers are:
    deprecated
    maintainers
    researcher-guidelines
+   contribution-maturity-model
 
 These are some overall technical guides that have been put here for now for
 lack of a better place.
@@ -65,12 +66,13 @@ lack of a better place.
    :maxdepth: 1
 
    applying-patches
+   backporting
    adding-syscalls
    magic-number
    volatile-considered-harmful
    botching-up-ioctls
    clang-format
-   ../riscv/patch-acceptance
+   ../arch/riscv/patch-acceptance
    ../core-api/unaligned-memory-access
 
 .. only::  subproject and html

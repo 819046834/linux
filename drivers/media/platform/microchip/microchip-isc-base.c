@@ -478,12 +478,8 @@ static const struct vb2_ops isc_vb2_ops = {
 static int isc_querycap(struct file *file, void *priv,
 			struct v4l2_capability *cap)
 {
-	struct isc_device *isc = video_drvdata(file);
-
 	strscpy(cap->driver, "microchip-isc", sizeof(cap->driver));
 	strscpy(cap->card, "Microchip Image Sensor Controller", sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info),
-		 "platform:%s", isc->v4l2_dev.name);
 
 	return 0;
 }
@@ -858,8 +854,10 @@ static int isc_try_configure_pipeline(struct isc_device *isc)
 static void isc_try_fse(struct isc_device *isc,
 			struct v4l2_subdev_state *sd_state)
 {
+	struct v4l2_subdev_frame_size_enum fse = {
+		.which = V4L2_SUBDEV_FORMAT_TRY,
+	};
 	int ret;
-	struct v4l2_subdev_frame_size_enum fse = {};
 
 	/*
 	 * If we do not know yet which format the subdev is using, we cannot
@@ -869,7 +867,6 @@ static void isc_try_fse(struct isc_device *isc,
 		return;
 
 	fse.code = isc->try_config.sd_format->mbus_code;
-	fse.which = V4L2_SUBDEV_FORMAT_TRY;
 
 	ret = v4l2_subdev_call(isc->current_subdev->sd, pad, enum_frame_size,
 			       sd_state, &fse);
@@ -1711,7 +1708,7 @@ static int isc_ctrl_init(struct isc_device *isc)
 
 static int isc_async_bound(struct v4l2_async_notifier *notifier,
 			   struct v4l2_subdev *subdev,
-			   struct v4l2_async_subdev *asd)
+			   struct v4l2_async_connection *asd)
 {
 	struct isc_device *isc = container_of(notifier->v4l2_dev,
 					      struct isc_device, v4l2_dev);
@@ -1740,7 +1737,7 @@ static int isc_async_bound(struct v4l2_async_notifier *notifier,
 
 static void isc_async_unbind(struct v4l2_async_notifier *notifier,
 			     struct v4l2_subdev *subdev,
-			     struct v4l2_async_subdev *asd)
+			     struct v4l2_async_connection *asd)
 {
 	struct isc_device *isc = container_of(notifier->v4l2_dev,
 					      struct isc_device, v4l2_dev);
@@ -1992,8 +1989,6 @@ int isc_mc_init(struct isc_device *isc, u32 ver)
 	strscpy(isc->mdev.driver_name, KBUILD_MODNAME,
 		sizeof(isc->mdev.driver_name));
 	strscpy(isc->mdev.model, match->compatible, sizeof(isc->mdev.model));
-	snprintf(isc->mdev.bus_info, sizeof(isc->mdev.bus_info), "platform:%s",
-		 isc->v4l2_dev.name);
 	isc->mdev.hw_revision = ver;
 
 	media_device_init(&isc->mdev);

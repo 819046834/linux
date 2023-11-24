@@ -9,7 +9,6 @@ Hardware Monitoring
 
    hwmon-kernel-api
    pmbus-core
-   inspur-ipsps1
    submitting-patches
    sysfs-interface
    userspace-tools
@@ -22,6 +21,7 @@ Hardware Monitoring Kernel Drivers
 
    abituguru
    abituguru3
+   acbel-fsg032
    acpi_power_meter
    ad7314
    adc128d818
@@ -77,6 +77,8 @@ Hardware Monitoring Kernel Drivers
    gl518sm
    gxp-fan-ctrl
    hih6130
+   hp-wmi-sensors
+   hs3001
    ibmaem
    ibm-cffps
    ibmpowernv
@@ -84,6 +86,7 @@ Hardware Monitoring Kernel Drivers
    ina2xx
    ina238
    ina3221
+   inspur-ipsps1
    intel-m10-bmc-hwmon
    ir35221
    ir38064
@@ -118,6 +121,7 @@ Hardware Monitoring Kernel Drivers
    ltc2947
    ltc2978
    ltc2990
+   ltc2991
    ltc3815
    ltc4151
    ltc4215
@@ -139,6 +143,7 @@ Hardware Monitoring Kernel Drivers
    max31760
    max31785
    max31790
+   max31827
    max34440
    max6620
    max6639
@@ -174,6 +179,7 @@ Hardware Monitoring Kernel Drivers
    peci-cputemp
    peci-dimmtemp
    pmbus
+   powerz
    powr1220
    pxe1610
    pwm-fan
@@ -184,6 +190,7 @@ Hardware Monitoring Kernel Drivers
    sch5627
    sch5636
    scpi-hwmon
+   sfctemp
    sht15
    sht21
    sht3x
@@ -191,7 +198,6 @@ Hardware Monitoring Kernel Drivers
    shtc1
    sis5595
    sl28cpld
-   smm665
    smpro-hwmon
    smsc47b397
    smsc47m192

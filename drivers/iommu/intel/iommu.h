@@ -19,13 +19,13 @@
 #include <linux/iommu.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/dmar.h>
-#include <linux/ioasid.h>
 #include <linux/bitfield.h>
 #include <linux/xarray.h>
 #include <linux/perf_event.h>
 
 #include <asm/cacheflush.h>
 #include <asm/iommu.h>
+#include <uapi/linux/iommufd.h>
 
 /*
  * VT-d hardware uses 4KiB page size regardless of host page size.
@@ -48,6 +48,9 @@
 #define DMA_FL_PTE_ACCESS	BIT_ULL(5)
 #define DMA_FL_PTE_DIRTY	BIT_ULL(6)
 #define DMA_FL_PTE_XD		BIT_ULL(63)
+
+#define DMA_SL_PTE_DIRTY_BIT	9
+#define DMA_SL_PTE_DIRTY	BIT_ULL(DMA_SL_PTE_DIRTY_BIT)
 
 #define ADDR_WIDTH_5LEVEL	(57)
 #define ADDR_WIDTH_4LEVEL	(48)
@@ -198,7 +201,6 @@
 #define ecap_flts(e)		(((e) >> 47) & 0x1)
 #define ecap_slts(e)		(((e) >> 46) & 0x1)
 #define ecap_slads(e)		(((e) >> 45) & 0x1)
-#define ecap_vcs(e)		(((e) >> 44) & 0x1)
 #define ecap_smts(e)		(((e) >> 43) & 0x1)
 #define ecap_dit(e)		(((e) >> 41) & 0x1)
 #define ecap_pds(e)		(((e) >> 42) & 0x1)
@@ -541,6 +543,10 @@ enum {
 #define sm_supported(iommu)	(intel_iommu_sm && ecap_smts((iommu)->ecap))
 #define pasid_supported(iommu)	(sm_supported(iommu) &&			\
 				 ecap_pasid((iommu)->ecap))
+#define ssads_supported(iommu) (sm_supported(iommu) &&                 \
+				ecap_slads((iommu)->ecap))
+#define nested_supported(iommu)	(sm_supported(iommu) &&			\
+				 ecap_nest((iommu)->ecap))
 
 struct pasid_entry;
 struct pasid_state_entry;
@@ -594,19 +600,45 @@ struct dmar_domain {
 					 * otherwise, goes through the second
 					 * level.
 					 */
+	u8 dirty_tracking:1;		/* Dirty tracking is enabled */
+	u8 nested_parent:1;		/* Has other domains nested on it */
 
 	spinlock_t lock;		/* Protect device tracking lists */
 	struct list_head devices;	/* all devices' list */
+	struct list_head dev_pasids;	/* all attached pasids */
 
-	struct dma_pte	*pgd;		/* virtual address */
-	int		gaw;		/* max guest address width */
-
-	/* adjusted guest address width, 0 is level 2 30-bit */
-	int		agaw;
 	int		iommu_superpage;/* Level of superpages supported:
 					   0 == 4KiB (no superpages), 1 == 2MiB,
 					   2 == 1GiB, 3 == 512GiB, 4 == 1TiB */
-	u64		max_addr;	/* maximum mapped address */
+	union {
+		/* DMA remapping domain */
+		struct {
+			/* virtual address */
+			struct dma_pte	*pgd;
+			/* max guest address width */
+			int		gaw;
+			/*
+			 * adjusted guest address width:
+			 *   0: level 2 30-bit
+			 *   1: level 3 39-bit
+			 *   2: level 4 48-bit
+			 *   3: level 5 57-bit
+			 */
+			int		agaw;
+			/* maximum mapped address */
+			u64		max_addr;
+		};
+
+		/* Nested user domain */
+		struct {
+			/* parent page table which the user domain is nested on */
+			struct dmar_domain *s2_domain;
+			/* user page table pointer (in GPA) */
+			unsigned long s1_pgtbl;
+			/* page table attributes */
+			struct iommu_hwpt_vtd_s1 s1_cfg;
+		};
+	};
 
 	struct iommu_domain domain;	/* generic domain data structure for
 					   iommu core */
@@ -678,12 +710,11 @@ struct intel_iommu {
 	unsigned char prq_name[16];    /* Name for PRQ interrupt */
 	unsigned long prq_seq_number;
 	struct completion prq_complete;
-	struct ioasid_allocator_ops pasid_allocator; /* Custom allocator for PASIDs */
 #endif
 	struct iopf_queue *iopf_queue;
 	unsigned char iopfq_name[16];
 	struct q_inval  *qi;            /* Queued invalidation info */
-	u32 *iommu_state; /* Store iommu states between suspend and resume.*/
+	u32 iommu_state[MAX_SR_DMAR_REGS]; /* Store iommu states between suspend and resume.*/
 
 #ifdef CONFIG_IRQ_REMAP
 	struct ir_table *ir_table;	/* Interrupt remapping info */
@@ -718,6 +749,18 @@ struct device_domain_info {
 	struct intel_iommu *iommu; /* IOMMU used by this device */
 	struct dmar_domain *domain; /* pointer to domain */
 	struct pasid_table *pasid_table; /* pasid table */
+#ifdef CONFIG_INTEL_IOMMU_DEBUGFS
+	struct dentry *debugfs_dentry; /* pointer to device directory dentry */
+#endif
+};
+
+struct dev_pasid_info {
+	struct list_head link_domain;	/* link to domain siblings */
+	struct device *dev;
+	ioasid_t pasid;
+#ifdef CONFIG_INTEL_IOMMU_DEBUGFS
+	struct dentry *debugfs_dentry; /* pointer to pasid directory dentry */
+#endif
 };
 
 static inline void __iommu_flush_cache(
@@ -777,6 +820,16 @@ static inline bool dma_pte_present(struct dma_pte *pte)
 	return (pte->val & 3) != 0;
 }
 
+static inline bool dma_sl_pte_test_and_clear_dirty(struct dma_pte *pte,
+						   unsigned long flags)
+{
+	if (flags & IOMMU_DIRTY_NO_CLEAR)
+		return (pte->val & DMA_SL_PTE_DIRTY) != 0;
+
+	return test_and_clear_bit(DMA_SL_PTE_DIRTY_BIT,
+				  (unsigned long *)&pte->val);
+}
+
 static inline bool dma_pte_superpage(struct dma_pte *pte)
 {
 	return (pte->val & DMA_PTE_LARGE_PAGE);
@@ -798,18 +851,18 @@ static inline bool context_present(struct context_entry *context)
 	return (context->lo & 1);
 }
 
-extern struct dmar_drhd_unit * dmar_find_matched_drhd_unit(struct pci_dev *dev);
+struct dmar_drhd_unit *dmar_find_matched_drhd_unit(struct pci_dev *dev);
 
-extern int dmar_enable_qi(struct intel_iommu *iommu);
-extern void dmar_disable_qi(struct intel_iommu *iommu);
-extern int dmar_reenable_qi(struct intel_iommu *iommu);
-extern void qi_global_iec(struct intel_iommu *iommu);
+int dmar_enable_qi(struct intel_iommu *iommu);
+void dmar_disable_qi(struct intel_iommu *iommu);
+int dmar_reenable_qi(struct intel_iommu *iommu);
+void qi_global_iec(struct intel_iommu *iommu);
 
-extern void qi_flush_context(struct intel_iommu *iommu, u16 did, u16 sid,
-			     u8 fm, u64 type);
-extern void qi_flush_iotlb(struct intel_iommu *iommu, u16 did, u64 addr,
-			  unsigned int size_order, u64 type);
-extern void qi_flush_dev_iotlb(struct intel_iommu *iommu, u16 sid, u16 pfsid,
+void qi_flush_context(struct intel_iommu *iommu, u16 did,
+		      u16 sid, u8 fm, u64 type);
+void qi_flush_iotlb(struct intel_iommu *iommu, u16 did, u64 addr,
+		    unsigned int size_order, u64 type);
+void qi_flush_dev_iotlb(struct intel_iommu *iommu, u16 sid, u16 pfsid,
 			u16 qdep, u64 addr, unsigned mask);
 
 void qi_flush_piotlb(struct intel_iommu *iommu, u16 did, u32 pasid, u64 addr,
@@ -832,21 +885,31 @@ int qi_submit_sync(struct intel_iommu *iommu, struct qi_desc *desc,
  */
 #define QI_OPT_WAIT_DRAIN		BIT(0)
 
-extern int dmar_ir_support(void);
+int domain_attach_iommu(struct dmar_domain *domain, struct intel_iommu *iommu);
+void domain_detach_iommu(struct dmar_domain *domain, struct intel_iommu *iommu);
+void device_block_translation(struct device *dev);
+int prepare_domain_attach_device(struct iommu_domain *domain,
+				 struct device *dev);
+void domain_update_iommu_cap(struct dmar_domain *domain);
+
+int dmar_ir_support(void);
 
 void *alloc_pgtable_page(int node, gfp_t gfp);
 void free_pgtable_page(void *vaddr);
 void iommu_flush_write_buffer(struct intel_iommu *iommu);
 struct intel_iommu *device_to_iommu(struct device *dev, u8 *bus, u8 *devfn);
+struct iommu_domain *intel_nested_domain_alloc(struct iommu_domain *parent,
+					       const struct iommu_user_data *user_data);
 
 #ifdef CONFIG_INTEL_IOMMU_SVM
-extern void intel_svm_check(struct intel_iommu *iommu);
-extern int intel_svm_enable_prq(struct intel_iommu *iommu);
-extern int intel_svm_finish_prq(struct intel_iommu *iommu);
+void intel_svm_check(struct intel_iommu *iommu);
+int intel_svm_enable_prq(struct intel_iommu *iommu);
+int intel_svm_finish_prq(struct intel_iommu *iommu);
 int intel_svm_page_response(struct device *dev, struct iommu_fault_event *evt,
 			    struct iommu_page_response *msg);
 struct iommu_domain *intel_svm_domain_alloc(void);
 void intel_svm_remove_dev_pasid(struct device *dev, ioasid_t pasid);
+void intel_drain_pasid_prq(struct device *dev, u32 pasid);
 
 struct intel_svm_dev {
 	struct list_head list;
@@ -865,6 +928,7 @@ struct intel_svm {
 };
 #else
 static inline void intel_svm_check(struct intel_iommu *iommu) {}
+static inline void intel_drain_pasid_prq(struct device *dev, u32 pasid) {}
 static inline struct iommu_domain *intel_svm_domain_alloc(void)
 {
 	return NULL;
@@ -877,8 +941,16 @@ static inline void intel_svm_remove_dev_pasid(struct device *dev, ioasid_t pasid
 
 #ifdef CONFIG_INTEL_IOMMU_DEBUGFS
 void intel_iommu_debugfs_init(void);
+void intel_iommu_debugfs_create_dev(struct device_domain_info *info);
+void intel_iommu_debugfs_remove_dev(struct device_domain_info *info);
+void intel_iommu_debugfs_create_dev_pasid(struct dev_pasid_info *dev_pasid);
+void intel_iommu_debugfs_remove_dev_pasid(struct dev_pasid_info *dev_pasid);
 #else
 static inline void intel_iommu_debugfs_init(void) {}
+static inline void intel_iommu_debugfs_create_dev(struct device_domain_info *info) {}
+static inline void intel_iommu_debugfs_remove_dev(struct device_domain_info *info) {}
+static inline void intel_iommu_debugfs_create_dev_pasid(struct dev_pasid_info *dev_pasid) {}
+static inline void intel_iommu_debugfs_remove_dev_pasid(struct dev_pasid_info *dev_pasid) {}
 #endif /* CONFIG_INTEL_IOMMU_DEBUGFS */
 
 extern const struct attribute_group *intel_iommu_groups[];
@@ -889,8 +961,8 @@ extern const struct iommu_ops intel_iommu_ops;
 
 #ifdef CONFIG_INTEL_IOMMU
 extern int intel_iommu_sm;
-extern int iommu_calculate_agaw(struct intel_iommu *iommu);
-extern int iommu_calculate_max_sagaw(struct intel_iommu *iommu);
+int iommu_calculate_agaw(struct intel_iommu *iommu);
+int iommu_calculate_max_sagaw(struct intel_iommu *iommu);
 int ecmd_submit_sync(struct intel_iommu *iommu, u8 ecmd, u64 oa, u64 ob);
 
 static inline bool ecmd_has_pmu_essential(struct intel_iommu *iommu)

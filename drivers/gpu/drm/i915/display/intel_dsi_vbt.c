@@ -46,6 +46,7 @@
 #include "intel_dsi.h"
 #include "intel_dsi_vbt.h"
 #include "intel_gmbus_regs.h"
+#include "intel_pps_regs.h"
 #include "vlv_dsi.h"
 #include "vlv_dsi_regs.h"
 #include "vlv_sideband.h"
@@ -234,7 +235,7 @@ static const u8 *mipi_exec_delay(struct intel_dsi *intel_dsi, const u8 *data)
 	struct drm_i915_private *i915 = to_i915(intel_dsi->base.base.dev);
 	u32 delay = *((const u32 *) data);
 
-	drm_dbg_kms(&i915->drm, "\n");
+	drm_dbg_kms(&i915->drm, "%d usecs\n", delay);
 
 	usleep_range(delay, delay + 10);
 	data += 4;
@@ -564,6 +565,9 @@ static const u8 *mipi_exec_i2c(struct intel_dsi *intel_dsi, const u8 *data)
 	u8 payload_size = *(data + 6);
 	u8 *payload_data;
 
+	drm_dbg_kms(&i915->drm, "bus %d client-addr 0x%02x reg 0x%02x data %*ph\n",
+		    vbt_i2c_bus_num, slave_addr, reg_offset, payload_size, data + 7);
+
 	if (intel_dsi->i2c_bus_num < 0) {
 		intel_dsi->i2c_bus_num = vbt_i2c_bus_num;
 		i2c_acpi_find_adapter(intel_dsi, slave_addr);
@@ -760,17 +764,6 @@ void intel_dsi_vbt_exec_sequence(struct intel_dsi *intel_dsi,
 		gpiod_set_value_cansleep(intel_dsi->gpio_panel, 0);
 	if (seq_id == MIPI_SEQ_BACKLIGHT_OFF && intel_dsi->gpio_backlight)
 		gpiod_set_value_cansleep(intel_dsi->gpio_backlight, 0);
-}
-
-void intel_dsi_msleep(struct intel_dsi *intel_dsi, int msec)
-{
-	struct intel_connector *connector = intel_dsi->attached_connector;
-
-	/* For v3 VBTs in vid-mode the delays are part of the VBT sequences */
-	if (is_vid_mode(intel_dsi) && connector->panel.vbt.dsi.seq_version >= 3)
-		return;
-
-	msleep(msec);
 }
 
 void intel_dsi_log_params(struct intel_dsi *intel_dsi)
